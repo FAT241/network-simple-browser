@@ -5,6 +5,14 @@ import javax.swing.text.html.HTMLEditorKit;
 import javax.swing.text.html.StyleSheet;
 import java.awt.*;
 import java.io.File;
+import java.io.BufferedReader;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.Socket;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpHeaders;
@@ -13,8 +21,17 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.time.Duration;
+import java.time.LocalTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Enumeration;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -31,6 +48,12 @@ public class SimpleBrowser extends JFrame {
 
     private String lastRawHtml = "";
     private String lastUrl = "";
+
+    private static final int SERVER_PORT = 8080;
+    private JButton btnBack, btnForward, btnHistory, btnScan;
+    private final List<HistoryEntry> navStack = new ArrayList<>(); // ngăn xếp cho Back/Forward
+    private int navIndex = -1;
+    private final List<HistoryEntry> visitLog = new ArrayList<>(); // nhật ký mọi lượt truy cập
 
     // Sử dụng HttpClient hiện đại của Java (Hỗ trợ tự động Redirect HTTP <-> HTTPS, không bị treo luồng)
     private final HttpClient httpClient = HttpClient.newBuilder()
@@ -60,10 +83,20 @@ public class SimpleBrowser extends JFrame {
         btnSend = new JButton("Gửi Request");
         btnOpenExternal = new JButton("Mở trên Trình duyệt ngoài");
         btnOpenExternal.setEnabled(false);
+        btnScan = new JButton("Quét LAN");
+        btnHistory = new JButton("Lịch sử");
         btnPanel.add(btnSend);
+        btnPanel.add(btnScan);
+        btnPanel.add(btnHistory);
         btnPanel.add(btnOpenExternal);
 
-        urlPanel.add(cbMethod, BorderLayout.WEST);
+        btnBack = new JButton("< Lùi");
+        btnForward = new JButton("Tiến >");
+        JPanel navPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 4, 0));
+        navPanel.add(btnBack);
+        navPanel.add(btnForward);
+        navPanel.add(cbMethod);
+        urlPanel.add(navPanel, BorderLayout.WEST);
         urlPanel.add(txtUrl, BorderLayout.CENTER);
         urlPanel.add(btnPanel, BorderLayout.EAST);
 
@@ -128,6 +161,256 @@ public class SimpleBrowser extends JFrame {
         btnSend.addActionListener(e -> executeRequest());
         txtUrl.addActionListener(e -> executeRequest());
         btnOpenExternal.addActionListener(e -> openInSystemBrowser());
+        btnBack.addActionListener(e -> navigateTo(navIndex - 1));
+        btnForward.addActionListener(e -> navigateTo(navIndex + 1));
+        btnHistory.addActionListener(e -> showHistoryDialog());
+        btnScan.addActionListener(e -> autoScanLanServer(false));
+
+        updateNavButtons();
+        autoScanLanServer(true); // Tự động dò tìm & kết nối server ngay khi mở trình duyệt
+    }
+
+    // ==================== LỊCH SỬ DUYỆT WEB (BACK / FORWARD / DANH SÁCH) ====================
+    private static class HistoryEntry {
+        final String method, url, postData, time;
+
+        HistoryEntry(String method, String url, String postData) {
+            this.method = method;
+            this.url = url;
+            this.postData = postData;
+            this.time = LocalTime.now().format(DateTimeFormatter.ofPattern("HH:mm:ss"));
+        }
+
+        boolean sameRequest(HistoryEntry o) {
+            return method.equals(o.method) && url.equals(o.url) && postData.equals(o.postData);
+        }
+
+        @Override
+        public String toString() {
+            return "[" + time + "] " + method + "  " + url + ("POST".equals(method) ? "   (" + postData + ")" : "");
+        }
+    }
+
+    // Ghi nhận 1 lượt truy cập THÀNH CÔNG (luôn chạy trên luồng giao diện EDT)
+    private void recordVisit(String method, String url, String postData) {
+        HistoryEntry entry = new HistoryEntry(method, url, "POST".equals(method) ? postData : "");
+        visitLog.add(entry);
+
+        // Tải lại đúng trang đang xem thì không thêm trùng vào ngăn xếp Back/Forward
+        if (navIndex >= 0 && navStack.get(navIndex).sameRequest(entry)) {
+            updateNavButtons();
+            return;
+        }
+        // Đi trang mới sau khi đã Back => xóa phần "Tiến" cũ (giống trình duyệt thật)
+        while (navStack.size() > navIndex + 1) {
+            navStack.remove(navStack.size() - 1);
+        }
+        navStack.add(entry);
+        navIndex = navStack.size() - 1;
+        updateNavButtons();
+    }
+
+    private void updateNavButtons() {
+        btnBack.setEnabled(navIndex > 0);
+        btnForward.setEnabled(navIndex >= 0 && navIndex < navStack.size() - 1);
+    }
+
+    private void navigateTo(int index) {
+        if (!btnSend.isEnabled()) return; // đang tải trang, bỏ qua
+        if (index < 0 || index >= navStack.size()) return;
+        navIndex = index;
+        HistoryEntry entry = navStack.get(index);
+        txtUrl.setText(entry.url);
+        cbMethod.setSelectedItem(entry.method);
+        if ("POST".equals(entry.method)) txtPostData.setText(entry.postData);
+        updateNavButtons();
+        executeRequest(false); // false: không ghi thêm vào lịch sử khi Back/Forward
+    }
+
+    private void showHistoryDialog() {
+        if (visitLog.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "Chưa có trang nào trong lịch sử duyệt web.",
+                    "Lịch sử duyệt web", JOptionPane.INFORMATION_MESSAGE);
+            return;
+        }
+        DefaultListModel<HistoryEntry> model = new DefaultListModel<>();
+        for (int i = visitLog.size() - 1; i >= 0; i--) { // mới nhất ở trên cùng
+            model.addElement(visitLog.get(i));
+        }
+        JList<HistoryEntry> list = new JList<>(model);
+        list.setFont(new Font("Consolas", Font.PLAIN, 13));
+        list.setSelectedIndex(0);
+
+        JDialog dlg = new JDialog(this, "Lịch sử duyệt web (" + visitLog.size() + " lượt truy cập)", true);
+        Runnable openSelected = () -> {
+            HistoryEntry sel = list.getSelectedValue();
+            if (sel == null) return;
+            dlg.dispose();
+            txtUrl.setText(sel.url);
+            cbMethod.setSelectedItem(sel.method);
+            if ("POST".equals(sel.method)) txtPostData.setText(sel.postData);
+            executeRequest(true);
+        };
+        list.addMouseListener(new java.awt.event.MouseAdapter() {
+            @Override
+            public void mouseClicked(java.awt.event.MouseEvent ev) {
+                if (ev.getClickCount() == 2) openSelected.run();
+            }
+        });
+
+        JButton btnOpen = new JButton("Mở trang đã chọn");
+        JButton btnClear = new JButton("Xóa lịch sử");
+        JButton btnClose = new JButton("Đóng");
+        btnOpen.addActionListener(e -> openSelected.run());
+        btnClear.addActionListener(e -> {
+            visitLog.clear();
+            navStack.clear();
+            navIndex = -1;
+            updateNavButtons();
+            dlg.dispose();
+        });
+        btnClose.addActionListener(e -> dlg.dispose());
+
+        JPanel bottom = new JPanel(new FlowLayout(FlowLayout.CENTER, 10, 6));
+        bottom.add(btnOpen);
+        bottom.add(btnClear);
+        bottom.add(btnClose);
+
+        JScrollPane sp = new JScrollPane(list);
+        sp.setPreferredSize(new Dimension(760, 320));
+        dlg.setLayout(new BorderLayout(8, 8));
+        dlg.add(sp, BorderLayout.CENTER);
+        dlg.add(bottom, BorderLayout.SOUTH);
+        dlg.pack();
+        dlg.setLocationRelativeTo(this);
+        dlg.setVisible(true);
+    }
+
+    // ==================== TỰ ĐỘNG DÒ TÌM HTTP SERVER TRONG MẠNG LAN ====================
+    private void autoScanLanServer(boolean isStartup) {
+        btnScan.setEnabled(false);
+        txtStatsAndHeaders.setText("Đang dò tìm HTTP Server trong mạng LAN (cổng " + SERVER_PORT + ")...");
+
+        new Thread(() -> {
+            Map<String, String> found = new ConcurrentHashMap<>();
+            ExecutorService pool = Executors.newFixedThreadPool(64);
+            try {
+                // Khi vừa mở app: thử localhost trước cho nhanh
+                if (isStartup) {
+                    String banner = probeHttpServer("127.0.0.1", SERVER_PORT);
+                    if (banner != null) found.put("localhost", banner);
+                }
+                if (found.isEmpty()) {
+                    // Lấy dải mạng từ IP LAN của máy mình, VD "192.168.43." rồi quét .1 -> .254 song song
+                    String localIp = getLocalIPv4();
+                    String subnet = localIp.substring(0, localIp.lastIndexOf('.') + 1);
+                    List<Callable<Void>> tasks = new ArrayList<>();
+                    for (int i = 1; i < 255; i++) {
+                        final String ip = subnet + i;
+                        tasks.add(() -> {
+                            String banner = probeHttpServer(ip, SERVER_PORT);
+                            if (banner != null) found.put(ip, banner);
+                            return null;
+                        });
+                    }
+                    pool.invokeAll(tasks);
+                }
+            } catch (Exception ex) {
+                SwingUtilities.invokeLater(() -> {
+                    txtStatsAndHeaders.setText("Lỗi quét mạng LAN: " + ex.getMessage());
+                    btnScan.setEnabled(true);
+                });
+                return;
+            } finally {
+                pool.shutdownNow();
+            }
+
+            List<String> ips = new ArrayList<>(found.keySet());
+            Collections.sort(ips);
+            SwingUtilities.invokeLater(() -> onScanFinished(ips, found, isStartup));
+        }).start();
+    }
+
+    private void onScanFinished(List<String> ips, Map<String, String> banners, boolean isStartup) {
+        btnScan.setEnabled(true);
+        if (ips.isEmpty()) {
+            txtStatsAndHeaders.setText("Không tìm thấy HTTP Server nào ở cổng " + SERVER_PORT
+                    + " trong mạng LAN.\nHãy chạy httpServer.java hoặc nhập URL thủ công.");
+            if (!isStartup) {
+                JOptionPane.showMessageDialog(this,
+                        "Không tìm thấy HTTP Server nào trong mạng LAN.\n"
+                                + "- Kiểm tra httpServer đã chạy chưa.\n"
+                                + "- Hai máy phải cùng mạng và Firewall phải cho phép cổng " + SERVER_PORT + ".",
+                        "Quét LAN", JOptionPane.WARNING_MESSAGE);
+            }
+            return;
+        }
+
+        String chosen = ips.get(0);
+        if (ips.size() > 1) {
+            String[] options = new String[ips.size()];
+            for (int i = 0; i < options.length; i++) {
+                options[i] = ips.get(i) + "   [" + banners.get(ips.get(i)) + "]";
+            }
+            Object sel = JOptionPane.showInputDialog(this, "Tìm thấy " + ips.size() + " Server, chọn 1 máy:",
+                    "Quét LAN", JOptionPane.QUESTION_MESSAGE, null, options, options[0]);
+            if (sel == null) {
+                txtStatsAndHeaders.setText("Đã hủy chọn Server.");
+                return;
+            }
+            chosen = sel.toString().split("\\s+")[0];
+        }
+
+        // Tự điền URL và kết nối luôn
+        txtUrl.setText("http://" + chosen + ":" + SERVER_PORT + "/index.html");
+        cbMethod.setSelectedItem("GET");
+        executeRequest(true);
+    }
+
+    // Gửi thử HEAD / để xác nhận đây thật sự là HTTP Server; trả về giá trị header Server (hoặc null nếu không phải)
+    private String probeHttpServer(String ip, int port) {
+        try (Socket s = new Socket()) {
+            s.connect(new InetSocketAddress(ip, port), 250);
+            s.setSoTimeout(700);
+            OutputStream os = s.getOutputStream();
+            os.write(("HEAD / HTTP/1.1\r\nHost: " + ip + "\r\nConnection: close\r\n\r\n").getBytes(StandardCharsets.UTF_8));
+            os.flush();
+            BufferedReader in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.ISO_8859_1));
+            String status = in.readLine();
+            if (status == null || !status.startsWith("HTTP/")) return null;
+            String server = "Server không rõ";
+            String line;
+            while ((line = in.readLine()) != null && !line.isEmpty()) {
+                if (line.toLowerCase().startsWith("server:")) {
+                    server = line.substring(7).trim();
+                    break;
+                }
+            }
+            return server;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    // Lấy IPv4 LAN thật của máy hiện tại (bỏ qua card ảo VMware/Docker/WSL...)
+    private static String getLocalIPv4() {
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface iface = interfaces.nextElement();
+                if (iface.isLoopback() || !iface.isUp() || iface.isVirtual()) continue;
+                String name = iface.getDisplayName().toLowerCase();
+                if (name.contains("vmware") || name.contains("virtual") || name.contains("wsl") || name.contains("docker")) continue;
+                Enumeration<InetAddress> addrs = iface.getInetAddresses();
+                while (addrs.hasMoreElements()) {
+                    InetAddress a = addrs.nextElement();
+                    if (a instanceof Inet4Address && !a.isLoopbackAddress()) return a.getHostAddress();
+                }
+            }
+            return InetAddress.getLocalHost().getHostAddress();
+        } catch (Exception e) {
+            return "127.0.0.1";
+        }
     }
 
     private void setupSwingHtmlEngine() {
@@ -149,6 +432,10 @@ public class SimpleBrowser extends JFrame {
     }
 
     private void executeRequest() {
+        executeRequest(true);
+    }
+
+    private void executeRequest(boolean addToHistory) {
         String rawUrl = txtUrl.getText().trim();
         if (!rawUrl.startsWith("http://") && !rawUrl.startsWith("https://")) {
             rawUrl = "http://" + rawUrl;
@@ -197,6 +484,7 @@ public class SimpleBrowser extends JFrame {
                     }
 
                     SwingUtilities.invokeLater(() -> {
+                        if (addToHistory) recordVisit(method, targetUrl, postData);
                         txtStatsAndHeaders.setText(headInfo.toString());
                         txtRawHtml.setText("(Phương thức HEAD không trả về thân trang HTML)");
                         renderHtmlSafely("<html><body><div class='card'><h2>Kết quả phương thức HEAD (HTTP " + statusCode + ")</h2>"
@@ -233,6 +521,7 @@ public class SimpleBrowser extends JFrame {
                     String printableHtml = prepareHtmlForSwingView(htmlContent, lastUrl);
 
                     SwingUtilities.invokeLater(() -> {
+                        if (addToHistory) recordVisit(method, targetUrl, postData);
                         txtStatsAndHeaders.setText(stats.toString());
                         txtRawHtml.setText(htmlContent);
                         txtRawHtml.setCaretPosition(0);
