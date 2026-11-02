@@ -20,16 +20,17 @@ public class httpServer implements Runnable {
 
     public static void main(String[] args) {
         try (ServerSocket serverConnect = new ServerSocket(PORT, 50, InetAddress.getByName("0.0.0.0"))) {
-            System.out.println("=== HTTP SERVER (RFC 2616) DA KHOI DONG ===");
-            System.out.println("Dang lang nghe tai cong: " + PORT);
-            System.out.println("Hay mo SimpleBrowser va truy cap: http://localhost:8080/index.html\n");
+            System.out.println("=== HTTP SERVER ĐA DỊCH VỤ (RFC 2616) ĐÃ KHỞI ĐỘNG ===");
+            System.out.println("Đang lắng nghe tại cổng: " + PORT);
+            System.out.println("Hỗ trợ các định dạng: .html, .css, .pdf, .mp3, .mp4, .png, .jpg, .json");
+            System.out.println("Truy cập thử nghiệm: http://localhost:" + PORT + "/index.html\n");
 
             while (true) {
                 Socket clientSocket = serverConnect.accept();
                 new Thread(new httpServer(clientSocket)).start();
             }
         } catch (IOException e) {
-            System.err.println("Server connection error: " + e.getMessage());
+            System.err.println("Lỗi máy chủ HTTP: " + e.getMessage());
         }
     }
 
@@ -58,7 +59,7 @@ public class httpServer implements Runnable {
                 }
             }
 
-            // Nếu là POST, đọc chính xác số ký tự có sẵn trong buffer
+            // Nếu là POST, đọc nội dung body
             StringBuilder postData = new StringBuilder();
             if ("POST".equals(method) && contentLength > 0) {
                 char[] buf = new char[contentLength];
@@ -91,30 +92,26 @@ public class httpServer implements Runnable {
 
             if (file.exists() && !file.isDirectory() && !"POST".equals(method)) {
                 bodyBytes = Files.readAllBytes(file.toPath());
-            } else {
-                // Trang HTML mẫu có giao diện rõ ràng và đầy đủ các thẻ <p>, <div>, <span>, <img>, <imag> để test
-                String demoHtml = "<!DOCTYPE html><html><head><title>VKU Network Lab - Nhom 1</title></head><body>"
+            } else if ("POST".equals(method)) {
+                String postResponseHtml = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>POST Result</title><link rel='stylesheet' href='style.css'></head><body>"
+                        + "<div class='header'><h1>Kết quả Xử lý Yêu cầu POST từ Client</h1></div>"
                         + "<div class='card'>"
-                        + "<h1>Chào mừng đến với Web Server Nhóm 1 (RFC 2616)</h1>"
-                        + "<p>Đây là đoạn văn thứ nhất dùng thẻ <span>&lt;p&gt;</span> và thẻ <span>&lt;span&gt;</span> để kiểm thử bộ đếm của Browser.</p>"
-                        + "<p>Đây là đoạn văn thứ hai: Phương thức bạn vừa gọi là <span>" + method + "</span>.</p>"
-                        + "</div>"
-                        + ("POST".equals(method)
-                        ? "<div class='card'><h2>Kết quả xử lý dữ liệu POST từ Client:</h2>"
-                        + "<p>Server đã nhận thành công chuỗi dữ liệu: <span>" + postData + "</span></p></div>"
-                        : "")
-                        + "<div class='card'>"
-                        + "<h2>Danh sách Hình ảnh & Liên kết kiểm thử:</h2>"
-                        + "<p>Thẻ ảnh chuẩn HTML: <img src='vku_logo.png' /></p>"
-                        + "<p>Thẻ ảnh theo đề bài: <imag src='network_diagram.jpg' /></p>"
-                        + "<p>Bấm thử vào liên kết: <a href='http://example.com'>Chuyển sang trang Example.com</a></p>"
-                        + "</div>"
-                        + "</body></html>";
-                bodyBytes = demoHtml.getBytes(StandardCharsets.UTF_8);
+                        + "<h2>Dữ liệu đã nhận thành công từ Body:</h2>"
+                        + "<p><span>" + postData + "</span></p>"
+                        + "<p><a href='index.html'>⬅ Quay lại trang chủ</a></p>"
+                        + "</div></body></html>";
+                bodyBytes = postResponseHtml.getBytes(StandardCharsets.UTF_8);
                 contentType = "text/html; charset=UTF-8";
+            } else {
+                // File 404
+                String notFoundHtml = "<!DOCTYPE html><html><head><meta charset='UTF-8'><title>404 Not Found</title></head><body>"
+                        + "<h1>404 File Not Found</h1><p>Tài nguyên " + fileRequested + " không tồn tại trên máy chủ.</p></body></html>";
+                bodyBytes = notFoundHtml.getBytes(StandardCharsets.UTF_8);
+                sendHttpResponse(rawOut, "404 Not Found", "text/html; charset=UTF-8", bodyBytes, !method.equals("HEAD"));
+                return;
             }
 
-            // Với HEAD: chỉ gửi Header (includeBody = false). Với GET và POST: gửi cả Header + Body (includeBody = true)
+            // Với HEAD: chỉ gửi Header. Với GET và POST: gửi cả Header + Body
             boolean includeBody = method.equals("GET") || method.equals("POST");
             sendHttpResponse(rawOut, "200 OK", contentType, bodyBytes, includeBody);
 
@@ -123,19 +120,19 @@ public class httpServer implements Runnable {
         } finally {
             try {
                 connect.close();
-            } catch (IOException ignored) {
-            }
+            } catch (IOException ignored) {}
         }
     }
 
     private void sendHttpResponse(OutputStream out, String status, String contentType, byte[] body, boolean includeBody) throws IOException {
         String headers = "HTTP/1.1 " + status + "\r\n"
-                + "Server: VKU-Java-HTTP-Server/2.0\r\n"
+                + "Server: VKU-Java-MultiService-HTTP-Server/3.0\r\n"
                 + "Date: " + new Date() + "\r\n"
                 + "Content-Type: " + contentType + "\r\n"
                 + "Content-Length: " + body.length + "\r\n"
+                + "Accept-Ranges: bytes\r\n"
                 + "Connection: close\r\n"
-                + "\r\n"; // Dòng trống bắt buộc ngăn cách Header và Body theo RFC 2616
+                + "\r\n";
 
         out.write(headers.getBytes(StandardCharsets.UTF_8));
         if (includeBody) {
@@ -145,9 +142,16 @@ public class httpServer implements Runnable {
     }
 
     private String getContentType(String fileRequested) {
-        if (fileRequested.endsWith(".htm") || fileRequested.endsWith(".html")) {
-            return "text/html; charset=UTF-8";
-        }
+        String lower = fileRequested.toLowerCase();
+        if (lower.endsWith(".htm") || lower.endsWith(".html")) return "text/html; charset=UTF-8";
+        if (lower.endsWith(".css")) return "text/css; charset=UTF-8";
+        if (lower.endsWith(".js")) return "application/javascript; charset=UTF-8";
+        if (lower.endsWith(".pdf")) return "application/pdf";
+        if (lower.endsWith(".mp3")) return "audio/mpeg";
+        if (lower.endsWith(".mp4")) return "video/mp4";
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+        if (lower.endsWith(".json")) return "application/json; charset=UTF-8";
         return "text/plain; charset=UTF-8";
     }
 }

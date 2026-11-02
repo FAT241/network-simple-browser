@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <title>Cổng Dịch Vụ Web Đa Phương Tiện - VKU Lập Trình Mạng</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="header">
+        <h1>🌐 MÁY CHỦ WEB ĐA DỊCH VỤ (RFC 2616 HTTP SERVER)</h1>
+        <p>Học phần: <span>Lập Trình Mạng</span> - Đại học CNTT & Truyền thông Việt - Hàn (VKU)</p>
+    </div>
+
+    <div class="card">
+        <h2>📁 1. Danh Sách Dịch Vụ Đa Phương Tiện Của Server (Đạt chuẩn yêu cầu của Thầy)</h2>
+        <p>Máy chủ hỗ trợ đầy đủ các định dạng truyền thông MIME Type chuẩn:</p>
+        <ul>
+            <li>📄 <b>Tài liệu PDF:</b> <a href="sample.pdf">sample.pdf</a> (Content-Type: application/pdf)</li>
+            <li>🎵 <b>Tệp Âm thanh MP3:</b> <a href="sample.mp3">sample.mp3</a> (Content-Type: audio/mpeg)</li>
+            <li>🎥 <b>Tệp Video MP4:</b> <a href="sample.mp4">sample.mp4</a> (Content-Type: video/mp4)</li>
+            <li>🎨 <b>Tệp Stylesheet CSS:</b> <a href="style.css">style.css</a> (Content-Type: text/css)</li>
+        </ul>
+    </div>
+
+    <div class="card">
+        <h2>🧪 2. Kiểm Thử Các Thẻ HTML Theo Đề Bài Lab 4</h2>
+        <p>Đoạn văn này kiểm thử thẻ <span>&lt;p&gt;</span> và thẻ <span>&lt;span&gt;</span>.</p>
+        <div class="inner-box">
+            <p>Đây là một thẻ <span>&lt;div&gt;</span> con chứa thêm thẻ văn bản.</p>
+        </div>
+        <p>Thẻ ảnh chuẩn HTML: <img src="logo.png" alt="VKU Logo"></p>
+        <p>Thẻ ảnh imag theo đề cương: <imag src="network_diagram.png" alt="Sơ đồ mạng"></imag></p>
+    </div>
+
+    <div class="card">
+        <h2>📮 3. Biểu Mẫu Kiểm Thử Phương Thức POST</h2>
+        <form action="/index.html" method="POST">
+            <p>Nhập thông điệp kiểm tra: <span><input type="text" name="message" value="Xin chào thầy giáo LTM VKU!"></span></p>
+            <p><input type="submit" value="Gửi POST Dữ Liệu"></p>
+        </form>
+    </div>
+</body>
+</html>
