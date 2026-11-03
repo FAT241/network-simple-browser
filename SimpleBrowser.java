@@ -16,6 +16,7 @@ import java.nio.file.Files;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.sql.*;
 import java.util.*;
 import java.util.List;
 import java.util.concurrent.Callable;
@@ -455,6 +456,10 @@ public class SimpleBrowser extends JFrame {
         updateNavButtons();
     }
 
+    private static final String MYSQL_URL = "jdbc:mysql://localhost:3306/vku_network_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC";
+    private static final String MYSQL_USER = "root";
+    private static final String MYSQL_PASS = "";
+
     private void saveHistoryEntryToDb(HistoryEntry e) {
         boolean exists = new File(HISTORY_DB_FILE).exists();
         try (PrintWriter pw = new PrintWriter(new OutputStreamWriter(new FileOutputStream(HISTORY_DB_FILE, true), StandardCharsets.UTF_8))) {
@@ -464,9 +469,53 @@ public class SimpleBrowser extends JFrame {
             pw.printf("%s,%s,%s,%s,%d,%d%n",
                     escapeCsv(e.time), escapeCsv(e.method), escapeCsv(e.url), escapeCsv(e.postData), e.statusCode, e.contentLength);
         } catch (IOException ignored) {}
+
+        // Ghi đồng thời vào MySQL XAMPP (nếu có driver và service đang bật)
+        new Thread(() -> {
+            try {
+                Class.forName("com.mysql.cj.jdbc.Driver");
+                try (Connection conn = DriverManager.getConnection(MYSQL_URL, MYSQL_USER, MYSQL_PASS);
+                     PreparedStatement ps = conn.prepareStatement(
+                             "INSERT INTO browser_history (time, method, url, post_data, status_code, content_length) VALUES (?, ?, ?, ?, ?, ?)")) {
+                    ps.setString(1, e.time);
+                    ps.setString(2, e.method);
+                    ps.setString(3, e.url);
+                    ps.setString(4, e.postData);
+                    ps.setInt(5, e.statusCode);
+                    ps.setLong(6, e.contentLength);
+                    ps.executeUpdate();
+                }
+            } catch (Throwable ignored) {}
+        }).start();
     }
 
     private void loadHistoryDatabase() {
+        // Ưu tiên nạp từ XAMPP MySQL
+        boolean loadedFromSql = false;
+        try {
+            Class.forName("com.mysql.cj.jdbc.Driver");
+            try (Connection conn = DriverManager.getConnection(MYSQL_URL, MYSQL_USER, MYSQL_PASS);
+                 Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT time, method, url, post_data, status_code, content_length FROM browser_history ORDER BY id ASC")) {
+
+                while (rs.next()) {
+                    HistoryEntry e = new HistoryEntry(
+                            rs.getString("time"),
+                            rs.getString("method"),
+                            rs.getString("url"),
+                            rs.getString("post_data"),
+                            rs.getInt("status_code"),
+                            rs.getLong("content_length")
+                    );
+                    visitLog.add(e);
+                    loadedFromSql = true;
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        if (loadedFromSql && !visitLog.isEmpty()) return;
+
+        // Fallback nạp từ file CSV
         File f = new File(HISTORY_DB_FILE);
         if (!f.exists()) return;
         try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
@@ -524,6 +573,12 @@ public class SimpleBrowser extends JFrame {
                 navStack.clear();
                 navIndex = -1;
                 new File(HISTORY_DB_FILE).delete();
+                new Thread(() -> {
+                    try (Connection conn = DriverManager.getConnection(MYSQL_URL, MYSQL_USER, MYSQL_PASS);
+                         Statement stmt = conn.createStatement()) {
+                        stmt.executeUpdate("DELETE FROM browser_history");
+                    } catch (Throwable ignored) {}
+                }).start();
                 model.setRowCount(0);
                 updateNavButtons();
             }
