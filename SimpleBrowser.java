@@ -456,6 +456,10 @@ public class SimpleBrowser extends JFrame {
         updateNavButtons();
     }
 
+    private static final String PG_URL = "jdbc:postgresql://127.0.0.1:5432/lab8_server1";
+    private static final String PG_USER = "lab8_server1";
+    private static final String PG_PASS = "Lab8_e03980b458a7046436b168e426cee1aa5f2db97cf615811f";
+
     private static final String MYSQL_URL = "jdbc:mysql://localhost:3306/vku_network_db?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC";
     private static final String MYSQL_USER = "root";
     private static final String MYSQL_PASS = "";
@@ -470,8 +474,25 @@ public class SimpleBrowser extends JFrame {
                     escapeCsv(e.time), escapeCsv(e.method), escapeCsv(e.url), escapeCsv(e.postData), e.statusCode, e.contentLength);
         } catch (IOException ignored) {}
 
-        // Ghi đồng thời vào MySQL XAMPP (nếu có driver và service đang bật)
+        // Ghi đồng thời vào PostgreSQL và MySQL (chạy bất đồng bộ trong background thread)
         new Thread(() -> {
+            // 1. Ghi vào PostgreSQL (lab8_server1.browser_history)
+            try {
+                Class.forName("org.postgresql.Driver");
+                try (Connection conn = DriverManager.getConnection(PG_URL, PG_USER, PG_PASS);
+                     PreparedStatement ps = conn.prepareStatement(
+                             "INSERT INTO browser_history (time, method, url, post_data, status_code, content_length) VALUES (?, ?, ?, ?, ?, ?)")) {
+                    ps.setString(1, e.time);
+                    ps.setString(2, e.method);
+                    ps.setString(3, e.url);
+                    ps.setString(4, e.postData);
+                    ps.setInt(5, e.statusCode);
+                    ps.setLong(6, e.contentLength);
+                    ps.executeUpdate();
+                }
+            } catch (Throwable ignored) {}
+
+            // 2. Ghi vào MySQL XAMPP (vku_network_db.browser_history)
             try {
                 Class.forName("com.mysql.cj.jdbc.Driver");
                 try (Connection conn = DriverManager.getConnection(MYSQL_URL, MYSQL_USER, MYSQL_PASS);
@@ -490,8 +511,32 @@ public class SimpleBrowser extends JFrame {
     }
 
     private void loadHistoryDatabase() {
-        // Ưu tiên nạp từ XAMPP MySQL
-        boolean loadedFromSql = false;
+        // Ưu tiên 1: Nạp từ PostgreSQL
+        boolean loaded = false;
+        try {
+            Class.forName("org.postgresql.Driver");
+            try (Connection conn = DriverManager.getConnection(PG_URL, PG_USER, PG_PASS);
+                 Statement stmt = conn.createStatement();
+                 ResultSet rs = stmt.executeQuery("SELECT time, method, url, post_data, status_code, content_length FROM browser_history ORDER BY id ASC")) {
+
+                while (rs.next()) {
+                    HistoryEntry e = new HistoryEntry(
+                            rs.getString("time"),
+                            rs.getString("method"),
+                            rs.getString("url"),
+                            rs.getString("post_data"),
+                            rs.getInt("status_code"),
+                            rs.getLong("content_length")
+                    );
+                    visitLog.add(e);
+                    loaded = true;
+                }
+            }
+        } catch (Throwable ignored) {}
+
+        if (loaded && !visitLog.isEmpty()) return;
+
+        // Ưu tiên 2: Nạp từ XAMPP MySQL
         try {
             Class.forName("com.mysql.cj.jdbc.Driver");
             try (Connection conn = DriverManager.getConnection(MYSQL_URL, MYSQL_USER, MYSQL_PASS);
@@ -508,14 +553,14 @@ public class SimpleBrowser extends JFrame {
                             rs.getLong("content_length")
                     );
                     visitLog.add(e);
-                    loadedFromSql = true;
+                    loaded = true;
                 }
             }
         } catch (Throwable ignored) {}
 
-        if (loadedFromSql && !visitLog.isEmpty()) return;
+        if (loaded && !visitLog.isEmpty()) return;
 
-        // Fallback nạp từ file CSV
+        // Ưu tiên 3: Fallback nạp từ file CSV
         File f = new File(HISTORY_DB_FILE);
         if (!f.exists()) return;
         try (BufferedReader br = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
